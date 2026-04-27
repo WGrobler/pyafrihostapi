@@ -294,6 +294,19 @@ class VoipResource:
         _LOGGER.debug("Fetching VoIP products")
         return self.raw().get("client_solutions", [])
 
+    def airtime_balances_live(self, product_id: str) -> dict:
+        """Live airtime balance for a VoIP product.
+
+        Returns the raw response from
+        /en/api/v1/client-solution-voip/{product_id}/airtime-balances/live.
+        The ``balances`` list contains entries with ``balance`` (rands, float)
+        and ``airtime_wallet_type`` describing the unit.
+        """
+        _LOGGER.debug("Fetching VoIP airtime balance for %s", product_id)
+        return self._client._get(
+            f"/en/api/v1/client-solution-voip/{product_id}/airtime-balances/live"
+        )
+
 
 class DevicesResource:
     """Hardware devices on the account. Accessed via ``client.devices``."""

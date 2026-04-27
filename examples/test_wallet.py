@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Show airtime and SMS wallet balances for all mobile SIM products.
+"""Show airtime and SMS wallet balances for all mobile SIM and VoIP products.
 
 Handles both wallet endpoint types:
   - Regular/prepaid SIMs  → /en/api/voice/balances/wallet/{airtime_child_id}
   - AirMobile products    → /en/api/v1/client-solution-airmobile/{id}/balances/summary
+  - VoIP products         → /en/api/v1/client-solution-voip/{id}/airtime-balances/live
 
 Run test_login.py first to create the session file, then:
     python test_wallet.py
@@ -81,6 +82,21 @@ def print_airmobile_wallet(sim: dict, resp: dict) -> None:
             print(f"    {label:<22}  R{amount / 100:.2f}")
 
 
+def print_voip_wallet(voip: dict, balances: list) -> None:
+    """Print airtime balance entries from the /airtime-balances/live response."""
+    for b in balances:
+        balance = b.get("balance", 0)
+        wtype = b.get("airtime_wallet_type", {})
+        label = wtype.get("name", "Airtime")
+        unit = wtype.get("display_unit") or wtype.get("unit") or {}
+        symbol = unit.get("symbol", "R")
+        prefix = unit.get("prefix_symbol", True)
+        expiry = b.get("expiry_date")
+        expiry_str = f"  (expires {fmt_timestamp(expiry)})" if expiry else ""
+        value_str = f"{symbol}{balance:.2f}" if prefix else f"{balance:.2f} {symbol}"
+        print(f"    {label:<22}  {value_str}{expiry_str}")
+
+
 def main() -> None:
     client = AfrihostClient("", "")
     if not (client.load_session(SESSION_FILE) and client.verify_session()):
@@ -89,30 +105,50 @@ def main() -> None:
 
     mobile = client.mobile.products()
     sims = mobile.get("mobile_solutions", [])
-
-    if not sims:
-        print("No mobile SIM products found on this account.")
-        return
+    voips = client.voip.products()
 
     print(f"\n{'=' * 60}")
     print(f"  MOBILE WALLET BALANCES  ({len(sims)} SIM product(s))")
     print("=" * 60)
 
-    for sim in sims:
-        name = sim.get("friendlyname") or sim.get("uid") or str(sim.get("id"))
-        status = sim.get("status", "")
-        sol = sim.get("solution", {})
-        wallet_type = "AirMobile" if _is_airmobile(sim) else "Voice"
-        print(f"\n  [{sim['id']}] {name}  —  {status}  ({wallet_type} wallet)")
-        try:
-            resp = client.mobile.wallet_balances(sim)
-            if _is_airmobile(sim):
-                print_airmobile_wallet(sim, resp)
-            else:
-                wallet = resp.get("data", {}) if isinstance(resp, dict) else {}
-                print_voice_wallet(sim, wallet)
-        except Exception as exc:
-            _log.warning("Could not fetch wallet for %s: %s", name, exc)
+    if sims:
+        for sim in sims:
+            name = sim.get("friendlyname") or sim.get("uid") or str(sim.get("id"))
+            status = sim.get("status", "")
+            wallet_type = "AirMobile" if _is_airmobile(sim) else "Voice"
+            print(f"\n  [{sim['id']}] {name}  —  {status}  ({wallet_type} wallet)")
+            try:
+                resp = client.mobile.wallet_balances(sim)
+                if _is_airmobile(sim):
+                    print_airmobile_wallet(sim, resp)
+                else:
+                    wallet = resp.get("data", {}) if isinstance(resp, dict) else {}
+                    print_voice_wallet(sim, wallet)
+            except Exception as exc:
+                _log.warning("Could not fetch wallet for %s: %s", name, exc)
+    else:
+        print("\n  No mobile SIM products found.")
+
+    print(f"\n{'=' * 60}")
+    print(f"  VOIP WALLET BALANCES  ({len(voips)} VoIP product(s))")
+    print("=" * 60)
+
+    if voips:
+        for voip in voips:
+            name = voip.get("friendlyname") or voip.get("uid") or str(voip.get("id"))
+            status = voip.get("status", "")
+            print(f"\n  [{voip['id']}] {name}  —  {status}")
+            try:
+                resp = client.voip.airtime_balances_live(str(voip["id"]))
+                balances = resp.get("balances", [])
+                if balances:
+                    print_voip_wallet(voip, balances)
+                else:
+                    print("    No airtime balance found.")
+            except Exception as exc:
+                _log.warning("Could not fetch wallet for %s: %s", name, exc)
+    else:
+        print("\n  No VoIP products found.")
 
     print()
 
