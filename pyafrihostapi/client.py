@@ -17,11 +17,23 @@ class LoginError(Exception):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _airtime_wallet_id(sim: dict) -> Optional[str]:
-    """Return the airtime child product id (solution_type_id=900) from a SIM dict.
+# solution_type_id values that identify an AirMobile Prepaid parent product.
+# These use a separate wallet endpoint keyed on the parent ID.
+_AIRMOBILE_SOLUTION_TYPES = {840}
 
-    Works with dicts from the /en/api/voice list endpoint, which carry a
+
+def _is_airmobile(sim: dict) -> bool:
+    """Return True if this SIM uses the AirMobile wallet endpoint."""
+    sol = sim.get("solution") or {}
+    return sol.get("solution_type_id") in _AIRMOBILE_SOLUTION_TYPES
+
+
+def _airtime_wallet_id(sim: dict) -> Optional[str]:
+    """Return the airtime child product id (solution_type_id=900) from a regular SIM dict.
+
+    Works with dicts from the /en/api/voice list endpoint which carry a
     ``child_client_solutions`` list.  Returns None if no airtime child exists.
+    Not used for AirMobile products — those use the parent id directly.
     """
     for child in sim.get("child_client_solutions", []):
         sol = child.get("solution") or {}
@@ -47,7 +59,7 @@ class MobileProduct:
         SIM-based products use /en/api/voice/{id}.
         Legacy APN packages fall back to the connectivity response.
         """
-        _LOGGER.info("Fetching mobile product %s (raw)", self.id)
+        _LOGGER.debug("Fetching mobile product %s (raw)", self.id)
         try:
             return self._client._get(f"/en/api/voice/{self.id}")
         except Exception:
@@ -62,21 +74,26 @@ class MobileProduct:
     def wallet(self) -> dict:
         """Airtime and SMS wallet balances for this SIM.
 
-        Fetches the detail page for this SIM first to locate the airtime child
-        product (the ``airtime`` key in the response), then calls
-        /en/api/voice/balances/wallet/{airtime_child_id}.
-
-        Key wallets in the response: summary_airtime, summary_sms, evergreen,
-        sms, expiry.  Balance values are in raw units (cents for airtime);
-        multiply by airtime_wallet_type.display_amount to get the display value.
+        Fetches the SIM detail to determine the product type, then calls the
+        appropriate wallet endpoint:
+          - AirMobile (solution_type_id=840):
+              /en/api/v1/client-solution-airmobile/{id}/wallets
+          - All other SIMs: locates the airtime child (solution_type_id=900)
+              and calls /en/api/voice/balances/wallet/{child_id}
         """
-        _LOGGER.info("Fetching wallet balances for mobile SIM %s", self.id)
+        _LOGGER.debug("Fetching wallet balances for mobile SIM %s", self.id)
         detail = self._client._get(f"/en/api/voice/{self.id}")
+        sim_data = detail.get("data", {}).get("solution", {})
+        if _is_airmobile(sim_data):
+            _LOGGER.debug("AirMobile balances summary for SIM %s", self.id)
+            return self._client._get(
+                f"/en/api/v1/client-solution-airmobile/{self.id}/balances/summary"
+            )
         airtime_child = detail.get("data", {}).get("airtime", {})
         wallet_id = airtime_child.get("id")
         if not wallet_id:
             raise KeyError(f"No airtime child found for SIM '{self.id}'")
-        _LOGGER.debug("Airtime child id=%s for SIM %s", wallet_id, self.id)
+        _LOGGER.debug("Voice wallet via airtime child id=%s for SIM %s", wallet_id, self.id)
         return self._client._get(f"/en/api/voice/balances/wallet/{wallet_id}")
 
 
@@ -89,7 +106,7 @@ class VoipProduct:
 
     def raw(self) -> dict:
         """Full raw detail for this VoIP product (looked up from the solutions list)."""
-        _LOGGER.info("Fetching VoIP product %s (raw)", self.id)
+        _LOGGER.debug("Fetching VoIP product %s (raw)", self.id)
         resp = self._client._get(
             "/en/api/v1/client-solutions?with[]=solution&solution_types[]=voip"
         )
@@ -108,7 +125,7 @@ class DeviceProduct:
 
     def raw(self) -> dict:
         """Full raw detail for this device (looked up from the connectivity response)."""
-        _LOGGER.info("Fetching device %s (raw)", self.id)
+        _LOGGER.debug("Fetching device %s (raw)", self.id)
         for item in self._client.connectivity.raw().get("device_products", []):
             if str(item.get("id")) == self.id:
                 return item
@@ -124,7 +141,7 @@ class WirelessProduct:
 
     def raw(self) -> dict:
         """Full raw detail for this wireless product (looked up from the connectivity response)."""
-        _LOGGER.info("Fetching wireless product %s (raw)", self.id)
+        _LOGGER.debug("Fetching wireless product %s (raw)", self.id)
         for item in self._client.connectivity.raw().get("fixed_wireless_products", []):
             if str(item.get("id")) == self.id:
                 return item
@@ -147,7 +164,7 @@ class AccountResource:
         Keys: client_contact (id, first_name, last_name, company_name,
         cell_number, tel_number, email, status, created_at, username, …)
         """
-        _LOGGER.info("Fetching account (raw)")
+        _LOGGER.debug("Fetching account (raw)")
         return self._client._get("/en/api/v1/client-contact")
 
 
@@ -164,7 +181,7 @@ class ConnectivityResource:
         voice_products, fixed_wireless_products, composite_dsl,
         pending_data_orders.
         """
-        _LOGGER.info("Fetching connectivity (raw)")
+        _LOGGER.debug("Fetching connectivity (raw)")
         return self._client._get("/en/api/connectivity")
 
 
@@ -183,7 +200,7 @@ class MobileResource:
         friendlyname, status, solution (plan/price), child_client_solutions
         (data buckets), mobile_subscriber_detail.
         """
-        _LOGGER.info("Fetching mobile (raw)")
+        _LOGGER.debug("Fetching mobile (raw)")
         return self._client._get("/en/api/voice")
 
     def products(self, product_id: str = None):
@@ -199,7 +216,7 @@ class MobileResource:
         """
         if product_id is not None:
             return MobileProduct(self._client, str(product_id))
-        _LOGGER.info("Fetching mobile products (combined)")
+        _LOGGER.debug("Fetching mobile products (combined)")
         voice = self._client._get("/en/api/voice").get("data", [])
         apn   = self._client.connectivity.raw().get("data_products", [])
         return {"mobile_solutions": voice, "apn_packages": apn}
@@ -208,17 +225,39 @@ class MobileResource:
         """Airtime and SMS wallet balances for a SIM product.
 
         Pass the full SIM product dict (as returned by ``mobile.products()``
-        or ``mobile.raw()``).  The airtime child product (solution_type_id=900)
-        is located from ``child_client_solutions`` and its id is used to call
-        /en/api/voice/balances/wallet/{airtime_child_id}.
+        or ``mobile.raw()``).
+
+        Routes to the correct endpoint based on product type:
+          - AirMobile (solution_type_id=840):
+              /en/api/v1/client-solution-airmobile/{id}/wallets
+          - All other SIMs (solution_type_id 800/810/811 etc.):
+              /en/api/voice/balances/wallet/{airtime_child_id}
+              where the child has solution_type_id=900 in child_client_solutions.
         """
+        if _is_airmobile(sim):
+            pid = str(sim["id"])
+            _LOGGER.debug("Fetching AirMobile balances summary for SIM %s", pid)
+            return self._client._get(
+                f"/en/api/v1/client-solution-airmobile/{pid}/balances/summary"
+            )
         wallet_id = _airtime_wallet_id(sim)
         if not wallet_id:
             raise KeyError(
                 f"No airtime child (solution_type_id=900) found for SIM '{sim.get('id')}'"
             )
-        _LOGGER.info("Fetching wallet balances via airtime child id=%s", wallet_id)
+        _LOGGER.debug("Fetching voice wallet via airtime child id=%s", wallet_id)
         return self._client._get(f"/en/api/voice/balances/wallet/{wallet_id}")
+
+    def composite(self, product_id: str) -> dict:
+        """Bandwidth usage summary for a regular (non-AirMobile) SIM product.
+
+        Returns the raw response from /en/api/voice/{product_id}/composite.
+        Usage data lives at response["data"]["data"]["usage"] and contains:
+          bandwidth_limit, bandwidth_used, bandwidth_available (bytes),
+          percentage_used (string, e.g. "88.93").
+        """
+        _LOGGER.debug("Fetching composite usage for mobile SIM %s", product_id)
+        return self._client._get(f"/en/api/voice/{product_id}/composite")
 
 
 class VoipResource:
@@ -234,7 +273,7 @@ class VoipResource:
         Each solution: id, uid (VoIP number), friendlyname, status,
         solution (plan/price), mobile_subscriber_detail.
         """
-        _LOGGER.info("Fetching VoIP (raw)")
+        _LOGGER.debug("Fetching VoIP (raw)")
         return self._client._get(
             "/en/api/v1/client-solutions?with[]=solution&solution_types[]=voip"
         )
@@ -252,7 +291,7 @@ class VoipResource:
         """
         if product_id is not None:
             return VoipProduct(self._client, str(product_id))
-        _LOGGER.info("Fetching VoIP products")
+        _LOGGER.debug("Fetching VoIP products")
         return self.raw().get("client_solutions", [])
 
 
@@ -269,7 +308,7 @@ class DevicesResource:
         friendly_status, description, sub_product_item (name/price),
         stock_item (serial_number), client_order (delivery details).
         """
-        _LOGGER.info("Fetching devices (raw)")
+        _LOGGER.debug("Fetching devices (raw)")
         return {"device_products": self._client.connectivity.raw().get("device_products", [])}
 
     def products(self, product_id: str = None):
@@ -284,7 +323,7 @@ class DevicesResource:
         """
         if product_id is not None:
             return DeviceProduct(self._client, str(product_id))
-        _LOGGER.info("Fetching devices")
+        _LOGGER.debug("Fetching devices")
         return self.raw()["device_products"]
 
 
@@ -301,7 +340,7 @@ class WirelessResource:
         name, display_name, status, bandwidth_limit, percentage_used,
         percentage_left, vendor_id.
         """
-        _LOGGER.info("Fetching wireless (raw)")
+        _LOGGER.debug("Fetching wireless (raw)")
         return {"fixed_wireless_products": self._client.connectivity.raw().get("fixed_wireless_products", [])}
 
     def products(self, product_id: str = None):
@@ -316,7 +355,7 @@ class WirelessResource:
         """
         if product_id is not None:
             return WirelessProduct(self._client, str(product_id))
-        _LOGGER.info("Fetching wireless products")
+        _LOGGER.debug("Fetching wireless products")
         return self.raw()["fixed_wireless_products"]
 
 
@@ -333,7 +372,7 @@ class HostingResource:
         remaining_byte, percent_available), isBillingRun, isReseller,
         wordingNext.
         """
-        _LOGGER.info("Fetching hosting (raw)")
+        _LOGGER.debug("Fetching hosting (raw)")
         return self._client._get("/en/api/my-hosting")
 
 
