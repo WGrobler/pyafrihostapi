@@ -14,6 +14,23 @@ class LoginError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _airtime_wallet_id(sim: dict) -> Optional[str]:
+    """Return the airtime child product id (solution_type_id=900) from a SIM dict.
+
+    Works with dicts from the /en/api/voice list endpoint, which carry a
+    ``child_client_solutions`` list.  Returns None if no airtime child exists.
+    """
+    for child in sim.get("child_client_solutions", []):
+        sol = child.get("solution") or {}
+        if sol.get("solution_type_id") == 900:
+            return str(child["id"])
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Per-product resource objects (returned by namespace.products(id))
 # ---------------------------------------------------------------------------
 
@@ -41,6 +58,26 @@ class MobileProduct:
                 _LOGGER.debug("Found product %s in APN data_products", self.id)
                 return item
         raise KeyError(f"Mobile product '{self.id}' not found")
+
+    def wallet(self) -> dict:
+        """Airtime and SMS wallet balances for this SIM.
+
+        Fetches the detail page for this SIM first to locate the airtime child
+        product (the ``airtime`` key in the response), then calls
+        /en/api/voice/balances/wallet/{airtime_child_id}.
+
+        Key wallets in the response: summary_airtime, summary_sms, evergreen,
+        sms, expiry.  Balance values are in raw units (cents for airtime);
+        multiply by airtime_wallet_type.display_amount to get the display value.
+        """
+        _LOGGER.info("Fetching wallet balances for mobile SIM %s", self.id)
+        detail = self._client._get(f"/en/api/voice/{self.id}")
+        airtime_child = detail.get("data", {}).get("airtime", {})
+        wallet_id = airtime_child.get("id")
+        if not wallet_id:
+            raise KeyError(f"No airtime child found for SIM '{self.id}'")
+        _LOGGER.debug("Airtime child id=%s for SIM %s", wallet_id, self.id)
+        return self._client._get(f"/en/api/voice/balances/wallet/{wallet_id}")
 
 
 class VoipProduct:
@@ -166,6 +203,22 @@ class MobileResource:
         voice = self._client._get("/en/api/voice").get("data", [])
         apn   = self._client.connectivity.raw().get("data_products", [])
         return {"mobile_solutions": voice, "apn_packages": apn}
+
+    def wallet_balances(self, sim: dict) -> dict:
+        """Airtime and SMS wallet balances for a SIM product.
+
+        Pass the full SIM product dict (as returned by ``mobile.products()``
+        or ``mobile.raw()``).  The airtime child product (solution_type_id=900)
+        is located from ``child_client_solutions`` and its id is used to call
+        /en/api/voice/balances/wallet/{airtime_child_id}.
+        """
+        wallet_id = _airtime_wallet_id(sim)
+        if not wallet_id:
+            raise KeyError(
+                f"No airtime child (solution_type_id=900) found for SIM '{sim.get('id')}'"
+            )
+        _LOGGER.info("Fetching wallet balances via airtime child id=%s", wallet_id)
+        return self._client._get(f"/en/api/voice/balances/wallet/{wallet_id}")
 
 
 class VoipResource:

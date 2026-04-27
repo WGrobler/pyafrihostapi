@@ -130,6 +130,7 @@ client.set_cookies(cookies)
 |---|---|
 | `examples/test_login.py` | Authenticate and verify credentials |
 | `examples/test_products.py` | List all products across every category |
+| `examples/test_wallet.py` | Show airtime and SMS wallet balances for all mobile SIMs |
 
 ---
 
