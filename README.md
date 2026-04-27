@@ -1,4 +1,4 @@
-# pyafrihostapi
+# pyAfrihostAPI
 
 Unofficial Python client for the [Afrihost ClientZone](https://clientzone.afrihost.com) portal.
 Intended for use as a standalone library or as the backend for integrations such as Home Assistant.
