@@ -1,0 +1,11 @@
+__pycache__/
+.venv/
+dist/
+build/
+*.egg-info/
+*.pyc
+secrets.yaml
+.env
+examples/.env
+*.afrihost_session.json
+dev/
